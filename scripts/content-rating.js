@@ -26,11 +26,19 @@ async function ensureLoggedIn(page) {
 
   const needsLogin = await page.evaluate(() => {
     const text = document.body.innerText || '';
-    return text.includes('Sign in') || text.includes('Log in') || text.includes('HUAWEI ID');
+    return !text.includes('jawad') && !text.includes('HANANE') &&
+           (text.includes('Sign in') || text.includes('Log in') || text.includes('HUAWEI ID'));
   });
 
   if (!needsLogin) {
     console.log('Already logged in.');
+    // Accept cookies if present
+    await page.evaluate(() => {
+      const btns = document.querySelectorAll('button, div, a');
+      for (const b of btns) {
+        if ((b.textContent || '').trim() === 'Accept All' && b.offsetWidth > 0) { b.click(); return; }
+      }
+    });
     return;
   }
 
@@ -41,47 +49,84 @@ async function ensureLoggedIn(page) {
   }
 
   console.log('Session expired. Auto-logging in...');
-  await page.goto('https://id1.cloud.huawei.com/CAS/portal/loginAuth.html?validated=true&themeName=red&service=https%3A%2F%2Foauth-login1.cloud.huawei.com%2Foauth2%2Fv2%2Flogin%3Faccess_type%3Doffline%26client_id%3D6099200%26display%3Dpage%26redirect_uri%3Dhttps%253A%252F%252Fdeveloper.huawei.com%252Fconsumer%252Fen%252Fservice%252Fjosp%252Fagc%252Findex.html%26response_type%3Dcode%26scope%3Dopenid&loginChannel=89000060&reqClientType=89', {
+
+  // Navigate to AGC to get fresh OAuth redirect to login page
+  await page.goto('https://developer.huawei.com/consumer/en/service/josp/agc/index.html', {
     waitUntil: 'domcontentloaded', timeout: 30000
   });
   await page.waitForTimeout(3000);
 
-  // Fill email
-  const emailInput = page.locator('input.hwid-input.userAccount');
-  await emailInput.fill('');
-  await emailInput.type(email, { delay: 50 });
-  await page.waitForTimeout(500);
-
-  // Fill password
-  const pwdInput = page.locator('input.hwid-input.hwid-input-pwd');
-  await pwdInput.fill('');
-  await pwdInput.type(password, { delay: 50 });
-  await page.waitForTimeout(500);
-
-  // Click LOG IN
+  // Click Sign in if visible
   await page.evaluate(() => {
-    const els = document.querySelectorAll('div, span, a, button');
+    const els = document.querySelectorAll('a, button, div, span');
     for (const el of els) {
       const text = (el.textContent || '').trim();
-      if ((text === 'LOG IN' || text === 'Log in' || text === 'Sign in') &&
-          el.offsetWidth > 0 && el.offsetHeight > 0) {
+      if ((text === 'Sign in' || text === 'Log in') && el.offsetWidth > 0 && el.offsetHeight > 0) {
         el.click();
         return;
       }
     }
-    const form = document.querySelector('form');
-    if (form) form.submit();
   });
+  await page.waitForTimeout(5000);
+
+  // Fill email
+  const emailInput = page.locator('input.hwid-input.userAccount');
+  await emailInput.click();
+  await page.waitForTimeout(200);
+  await emailInput.fill(email);
+  await page.waitForTimeout(500);
+
+  // Fill password
+  const pwdInput = page.locator('input.hwid-input.hwid-input-pwd');
+  await pwdInput.click();
+  await page.waitForTimeout(200);
+  await pwdInput.fill(password);
+  await page.waitForTimeout(1000);
+
+  // Click LOG IN via Playwright (force click to bypass disabled state)
+  const loginBtn = page.locator('.hwid-login-btn');
+  await loginBtn.click({ force: true });
+  console.log('Clicked LOG IN');
   await page.waitForTimeout(8000);
 
-  // Verify login succeeded
-  const stillNeedsLogin = await page.evaluate(() => {
-    const text = document.body.innerText || '';
-    return text.includes('Sign in') || text.includes('Log in') || text.includes('HUAWEI ID');
+  // Handle Trust dialog if shown
+  const postLoginText = await page.evaluate(() => document.body.innerText);
+  if (postLoginText.includes('Trust this browser')) {
+    console.log('Clicking TRUST...');
+    await page.evaluate(() => {
+      const els = document.querySelectorAll('div, span, a, button');
+      for (const el of els) {
+        if ((el.textContent || '').trim() === 'TRUST' && el.offsetWidth > 0) { el.click(); return; }
+      }
+    });
+    await page.waitForTimeout(8000);
+  }
+
+  if (postLoginText.includes('Verify identity') || postLoginText.includes('verification code')) {
+    throw new Error('Verification code required. Login manually first or trust browser.');
+  }
+
+  // Accept cookies if shown
+  await page.evaluate(() => {
+    const btns = document.querySelectorAll('button, div, a');
+    for (const b of btns) {
+      if ((b.textContent || '').trim() === 'Accept All' && b.offsetWidth > 0) { b.click(); return; }
+    }
   });
-  if (stillNeedsLogin) {
-    const pageText = await page.evaluate(() => document.body.innerText.substring(0, 300));
-    throw new Error('Auto-login failed. Page: ' + pageText);
+  await page.waitForTimeout(2000);
+
+  // Verify login by navigating to My Apps
+  await page.goto('https://developer.huawei.com/consumer/en/service/josp/agc/index.html#/myApp', {
+    waitUntil: 'domcontentloaded', timeout: 30000
+  });
+  await page.waitForTimeout(5000);
+
+  const loggedIn = await page.evaluate(() => {
+    const text = document.body.innerText || '';
+    return text.includes('jawad') || text.includes('HANANE') || text.includes('My apps');
+  });
+  if (!loggedIn) {
+    throw new Error('Auto-login failed. Could not verify logged-in state.');
   }
   console.log('Auto-login successful!');
 }

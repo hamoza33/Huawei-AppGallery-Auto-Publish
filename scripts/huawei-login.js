@@ -1,5 +1,6 @@
 // Huawei AppGallery Connect Auto-Login via Playwright CDP
 // Checks if logged in; if not, navigates to login page and authenticates.
+// After first successful login with trusted browser, session persists.
 //
 // Usage: node scripts/huawei-login.js [cdpUrl]
 //
@@ -21,17 +22,17 @@ if (!EMAIL || !PASSWORD) {
   const context = browser.contexts()[0];
   const page = context.pages()[0];
 
-  // Check if already logged in by navigating to My Apps
+  // Check if already logged in
   console.log('Checking login status...');
   await page.goto('https://developer.huawei.com/consumer/en/service/josp/agc/index.html#/myApp', {
-    waitUntil: 'domcontentloaded',
-    timeout: 30000
+    waitUntil: 'domcontentloaded', timeout: 30000
   });
   await page.waitForTimeout(6000);
 
   const needsLogin = await page.evaluate(() => {
     const text = document.body.innerText || '';
-    return text.includes('Sign in') || text.includes('Log in') || text.includes('HUAWEI ID');
+    return !text.includes('jawad') && !text.includes('HANANE') &&
+           (text.includes('Sign in') || text.includes('Log in') || text.includes('HUAWEI ID'));
   });
 
   if (!needsLogin) {
@@ -41,64 +42,99 @@ if (!EMAIL || !PASSWORD) {
   }
 
   console.log('Login required. Navigating to login page...');
-  await page.goto('https://id1.cloud.huawei.com/CAS/portal/loginAuth.html?validated=true&themeName=red&service=https%3A%2F%2Foauth-login1.cloud.huawei.com%2Foauth2%2Fv2%2Flogin%3Faccess_type%3Doffline%26client_id%3D6099200%26display%3Dpage%26flowID%3D81f12c6b-65a3-42d6-a498-c0ecb6544c89%26h%3D1753202482.0587%26lang%3Den-us%26redirect_uri%3Dhttps%253A%252F%252Fdeveloper.huawei.com%252Fconsumer%252Fen%252Fservice%252Fjosp%252Fagc%252Findex.html%26response_type%3Dcode%26scope%3Dopenid%2Bhttps%253A%252F%252Fwww.huawei.com%252Fauth%252Faccount%252Fcountry%2Bhttps%253A%252F%252Fwww.huawei.com%252Fauth%252Faccount%252Fbase.profile%2Bhttps%253A%252F%252Fwww.huawei.com%252Fauth%252Faccount%252Floginid%26state%3D1753202482059_19828%26v%3D5de3a2c89c24e7ef4e0fa6a3f59b0e02cb0c0e4e35d6e5b7e16f61cd6df3de53&loginChannel=89000060&reqClientType=89', {
-    waitUntil: 'domcontentloaded',
-    timeout: 30000
+
+  // First navigate to AGC which will redirect to login with fresh OAuth params
+  await page.goto('https://developer.huawei.com/consumer/en/service/josp/agc/index.html', {
+    waitUntil: 'domcontentloaded', timeout: 30000
   });
   await page.waitForTimeout(3000);
 
-  // Fill email
-  console.log('Entering email...');
+  // Click Sign in / Log in if visible
+  await page.evaluate(() => {
+    const els = document.querySelectorAll('a, button, div, span');
+    for (const el of els) {
+      const text = (el.textContent || '').trim();
+      if ((text === 'Sign in' || text === 'Log in') && el.offsetWidth > 0 && el.offsetHeight > 0) {
+        el.click();
+        return;
+      }
+    }
+  });
+  await page.waitForTimeout(5000);
+
+  // We should now be on the Huawei ID login page
+  console.log('On login page:', page.url());
+
+  // Fill email using keyboard (triggers proper events)
   const emailInput = page.locator('input.hwid-input.userAccount');
-  await emailInput.fill('');
-  await emailInput.type(EMAIL, { delay: 50 });
+  await emailInput.click();
+  await page.waitForTimeout(200);
+  await emailInput.fill(EMAIL);
   await page.waitForTimeout(500);
 
   // Fill password
-  console.log('Entering password...');
   const pwdInput = page.locator('input.hwid-input.hwid-input-pwd');
-  await pwdInput.fill('');
-  await pwdInput.type(PASSWORD, { delay: 50 });
-  await page.waitForTimeout(500);
+  await pwdInput.click();
+  await page.waitForTimeout(200);
+  await pwdInput.fill(PASSWORD);
+  await page.waitForTimeout(1000);
 
-  // Click LOG IN button
-  console.log('Clicking LOG IN...');
-  const loginClicked = await page.evaluate(() => {
-    // Find the login button - it's typically a div with "LOG IN" text or a submit
-    const divs = document.querySelectorAll('div, span, a, button');
-    for (const el of divs) {
-      const text = (el.textContent || '').trim();
-      if ((text === 'LOG IN' || text === 'Log in' || text === 'Sign in') &&
-          el.offsetWidth > 0 && el.offsetHeight > 0) {
-        el.click();
-        return text;
-      }
-    }
-    // Fallback: submit the form
-    const form = document.querySelector('form');
-    if (form) { form.submit(); return 'form-submit'; }
-    return false;
-  });
-  console.log(`Login click: ${loginClicked}`);
+  // Click LOG IN button via Playwright (force click to bypass disabled state)
+  const loginBtn = page.locator('.hwid-login-btn');
+  await loginBtn.click({ force: true });
+  console.log('Clicked LOG IN');
   await page.waitForTimeout(8000);
 
-  // Check result
-  const currentUrl = page.url();
-  console.log('Post-login URL:', currentUrl);
+  // Check if there's a trust/verification dialog
+  const postLoginText = await page.evaluate(() => document.body.innerText);
+
+  if (postLoginText.includes('Trust this browser')) {
+    console.log('Clicking TRUST...');
+    await page.evaluate(() => {
+      const els = document.querySelectorAll('div, span, a, button');
+      for (const el of els) {
+        if ((el.textContent || '').trim() === 'TRUST' && el.offsetWidth > 0) {
+          el.click();
+          return;
+        }
+      }
+    });
+    await page.waitForTimeout(8000);
+  }
+
+  if (postLoginText.includes('Verify identity') || postLoginText.includes('verification code')) {
+    console.log('VERIFICATION CODE REQUIRED - check email and run again with code');
+    process.exit(2);
+  }
+
+  // Accept cookies if shown
+  await page.evaluate(() => {
+    const btns = document.querySelectorAll('button, div, a');
+    for (const b of btns) {
+      if ((b.textContent || '').trim() === 'Accept All' && b.offsetWidth > 0) {
+        b.click();
+        return;
+      }
+    }
+  });
+  await page.waitForTimeout(2000);
+
+  // Navigate to My Apps to verify
+  await page.goto('https://developer.huawei.com/consumer/en/service/josp/agc/index.html#/myApp', {
+    waitUntil: 'domcontentloaded', timeout: 30000
+  });
+  await page.waitForTimeout(5000);
 
   const loggedIn = await page.evaluate(() => {
     const text = document.body.innerText || '';
-    if (text.includes('My apps') || text.includes('App name') || text.includes('My project')) return true;
-    return false;
+    return text.includes('jawad') || text.includes('HANANE') || text.includes('My apps');
   });
 
   if (loggedIn) {
     console.log('Login successful!');
   } else {
-    // Check for 2FA or verification
-    const pageText = await page.evaluate(() => document.body.innerText.substring(0, 500));
-    console.log('Page after login attempt:', pageText);
-    console.log('Login may require 2FA or verification. Check manually.');
+    console.log('Login status uncertain. Check browser manually.');
+    process.exit(1);
   }
 
   await browser.close();
