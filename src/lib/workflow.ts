@@ -9,7 +9,7 @@ import { TARGET_LOCALES, DEFAULT_LOCALE } from "./locales";
 import { generateScreenshots } from "./screenshots";
 import { resolveAppId, publishApk, updateLocalization, submitForReview } from "./fastlane";
 import { writeFastlaneMetadata, writeChangelog } from "./fastlane-metadata";
-import { applyAppInfoTemplate, templateIsEmpty, uploadAppIcon, uploadScreenshots, submitAgeRatingAllNo } from "./huawei-app-info";
+import { applyAppInfoTemplate, applyAppInfoViaConsole, templateIsEmpty, uploadAppIcon, uploadScreenshots, submitAgeRatingAllNo } from "./huawei-app-info";
 import { resolveAppTemplate } from "./app-template";
 import type { Upload } from "@prisma/client";
 
@@ -247,6 +247,7 @@ export async function stepReadyForReview(uploadId: string) {
 // Publish sub-step identifiers for UI tracking.
 const PUBLISH_STEPS = [
   "publish:template",
+  "publish:template:console",
   "publish:metadata",
   "publish:icon",
   "publish:screenshots",
@@ -303,13 +304,30 @@ export async function stepPublishToHuawei(uploadId: string) {
 
   // 1) Apply app-info template FIRST (countries, category, device types).
   //    Huawei requires publishCountry before APK upload (error 204144694).
+  //    The API often fails for new apps ("US not exist", "BT not exist").
+  //    When the API fails, fall back to Playwright CDP console automation.
+  let templateApplied = false;
   if (!templateIsEmpty(template)) {
     const r = await publishStep(uploadId, "publish:template", "Apply app-info template (countries/category)", 87, async () => {
       await applyAppInfoTemplate(appId, template, {
         onLog: (line) => logEvent(uploadId, "info", `[app-info] ${line}`),
       });
     });
-    if (!r.ok) failures.push({ step: "App-info template", error: r.error! });
+    if (r.ok) {
+      templateApplied = true;
+    } else {
+      await logEvent(uploadId, "warn", `API template failed: ${r.error}. Trying console automation...`);
+      const consoleFallback = await publishStep(uploadId, "publish:template:console", "Set countries/category via console (fallback)", 88, async () => {
+        await applyAppInfoViaConsole(appId, {
+          onLog: (line) => logEvent(uploadId, "info", line),
+        });
+      });
+      if (consoleFallback.ok) {
+        templateApplied = true;
+      } else {
+        failures.push({ step: "App-info template", error: `API: ${r.error}; Console fallback: ${consoleFallback.error}` });
+      }
+    }
   } else {
     await logEvent(uploadId, "info", "[step:publish:template:skip] No app-info template configured");
   }

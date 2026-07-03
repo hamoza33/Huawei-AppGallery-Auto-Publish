@@ -412,6 +412,62 @@ export async function uploadScreenshots(
   await opts.onLog?.(`${uploadedFiles.length} screenshots registered successfully`);
 }
 
+// ---------------------- App Info Setup via Playwright CDP (fallback) ----------------------
+//
+// When the API-based applyAppInfoTemplate fails (e.g. "US not exist" for new
+// apps), this function spawns scripts/setup-app-info.js which uses the console
+// UI to set Category and Countries.
+
+export async function applyAppInfoViaConsole(
+  appId: string,
+  opts: ApplyOptions = {},
+): Promise<void> {
+  const cdpUrl = process.env.CDP_URL || "http://localhost:9222";
+  await opts.onLog?.(`API template failed — falling back to console automation (CDP ${cdpUrl})`);
+
+  const scriptPath = path.join(process.cwd(), "scripts", "setup-app-info.js");
+  try {
+    await fs.access(scriptPath);
+  } catch {
+    throw new Error(
+      `Setup script not found at ${scriptPath}. ` +
+      `Ensure scripts/setup-app-info.js exists in the project root.`
+    );
+  }
+
+  const { execFile } = await import("child_process");
+  const { promisify } = await import("util");
+  const execFileAsync = promisify(execFile);
+
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      "node",
+      [scriptPath, appId, cdpUrl],
+      { timeout: 180_000, env: { ...process.env, CDP_URL: cdpUrl } },
+    );
+    if (stdout) {
+      for (const line of stdout.split("\n").filter(Boolean)) {
+        await opts.onLog?.(`[console-setup] ${line}`);
+      }
+    }
+    if (stderr) {
+      for (const line of stderr.split("\n").filter(Boolean)) {
+        await opts.onLog?.(`[console-setup:err] ${line}`);
+      }
+    }
+    await opts.onLog?.("App info (Category + Countries) set via console automation");
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (msg.includes("ECONNREFUSED") || msg.includes("connect")) {
+      throw new Error(
+        `Cannot connect to Chrome CDP at ${cdpUrl}. ` +
+        `Ensure Chrome is running with remote debugging enabled.`
+      );
+    }
+    throw new Error(`Console app-info setup failed: ${msg}`);
+  }
+}
+
 // ---------------------- Content Rating via Playwright CDP ----------------------
 //
 // Huawei does NOT expose a working age-rating API (returns 404). The content
