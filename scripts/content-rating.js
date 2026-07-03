@@ -1,12 +1,12 @@
 // Content Rating Automation - Playwright CDP
 // Navigates to app's version draft page, opens the content rating questionnaire,
 // expands all 11 categories, clicks "No" for every question, then verifies.
+// Auto-logs in if the Huawei session has expired.
 //
 // Usage: node scripts/content-rating.js <appId> [cdpUrl]
 //
-// Prerequisites:
-//   - Category and Countries must already be set (mandatory order)
-//   - Chrome must be logged into Huawei AppGallery Connect
+// Env vars: HUAWEI_LOGIN_EMAIL, HUAWEI_LOGIN_PASSWORD (for auto-login)
+// Prerequisites: Category and Countries must already be set (mandatory order)
 const { chromium } = require('playwright');
 
 const APP_ID = process.argv[2];
@@ -17,11 +17,83 @@ if (!APP_ID) {
   process.exit(1);
 }
 
+async function ensureLoggedIn(page) {
+  console.log('Checking Huawei login status...');
+  await page.goto('https://developer.huawei.com/consumer/en/service/josp/agc/index.html#/myApp', {
+    waitUntil: 'domcontentloaded', timeout: 30000
+  });
+  await page.waitForTimeout(6000);
+
+  const needsLogin = await page.evaluate(() => {
+    const text = document.body.innerText || '';
+    return text.includes('Sign in') || text.includes('Log in') || text.includes('HUAWEI ID');
+  });
+
+  if (!needsLogin) {
+    console.log('Already logged in.');
+    return;
+  }
+
+  const email = process.env.HUAWEI_LOGIN_EMAIL;
+  const password = process.env.HUAWEI_LOGIN_PASSWORD;
+  if (!email || !password) {
+    throw new Error('Session expired and HUAWEI_LOGIN_EMAIL / HUAWEI_LOGIN_PASSWORD not set. Cannot auto-login.');
+  }
+
+  console.log('Session expired. Auto-logging in...');
+  await page.goto('https://id1.cloud.huawei.com/CAS/portal/loginAuth.html?validated=true&themeName=red&service=https%3A%2F%2Foauth-login1.cloud.huawei.com%2Foauth2%2Fv2%2Flogin%3Faccess_type%3Doffline%26client_id%3D6099200%26display%3Dpage%26redirect_uri%3Dhttps%253A%252F%252Fdeveloper.huawei.com%252Fconsumer%252Fen%252Fservice%252Fjosp%252Fagc%252Findex.html%26response_type%3Dcode%26scope%3Dopenid&loginChannel=89000060&reqClientType=89', {
+    waitUntil: 'domcontentloaded', timeout: 30000
+  });
+  await page.waitForTimeout(3000);
+
+  // Fill email
+  const emailInput = page.locator('input.hwid-input.userAccount');
+  await emailInput.fill('');
+  await emailInput.type(email, { delay: 50 });
+  await page.waitForTimeout(500);
+
+  // Fill password
+  const pwdInput = page.locator('input.hwid-input.hwid-input-pwd');
+  await pwdInput.fill('');
+  await pwdInput.type(password, { delay: 50 });
+  await page.waitForTimeout(500);
+
+  // Click LOG IN
+  await page.evaluate(() => {
+    const els = document.querySelectorAll('div, span, a, button');
+    for (const el of els) {
+      const text = (el.textContent || '').trim();
+      if ((text === 'LOG IN' || text === 'Log in' || text === 'Sign in') &&
+          el.offsetWidth > 0 && el.offsetHeight > 0) {
+        el.click();
+        return;
+      }
+    }
+    const form = document.querySelector('form');
+    if (form) form.submit();
+  });
+  await page.waitForTimeout(8000);
+
+  // Verify login succeeded
+  const stillNeedsLogin = await page.evaluate(() => {
+    const text = document.body.innerText || '';
+    return text.includes('Sign in') || text.includes('Log in') || text.includes('HUAWEI ID');
+  });
+  if (stillNeedsLogin) {
+    const pageText = await page.evaluate(() => document.body.innerText.substring(0, 300));
+    throw new Error('Auto-login failed. Page: ' + pageText);
+  }
+  console.log('Auto-login successful!');
+}
+
 (async () => {
   console.log(`Connecting to Chrome CDP at ${CDP_URL}...`);
   const browser = await chromium.connectOverCDP(CDP_URL);
   const context = browser.contexts()[0];
   const page = context.pages()[0];
+
+  // Ensure we're logged in first
+  await ensureLoggedIn(page);
 
   // Navigate to the app's version draft page
   const appUrl = `https://developer.huawei.com/consumer/en/service/josp/agc/index.html#/myApp/${APP_ID}`;
