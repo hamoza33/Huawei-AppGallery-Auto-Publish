@@ -386,37 +386,47 @@ export async function stepPublishToHuawei(uploadId: string) {
     }
   }
 
-  // 6) Auto-answer content rating questionnaire.
-  if (template.autoContentRating) {
-    const r = await publishStep(uploadId, "publish:rating", "Auto-answer content rating (all No)", 97, async () => {
-      await submitAgeRatingAllNo(appId, {
-        onLog: (line) => logEvent(uploadId, "info", `[age-rating] ${line}`),
-      });
-    });
-    if (!r.ok) failures.push({ step: "Content rating", error: r.error! });
-  }
-
-  // 7) Submit for review (if enabled). Non-critical failures (template, content rating)
+  // 6) Submit for review. Non-critical failures (template, screenshots)
   // should NOT block submission — the APK upload is the only hard gate (already throws above).
   if (autoSubmit) {
     if (failures.length > 0) {
       const summary = failures.map((f) => `${f.step}: ${f.error}`).join("; ");
       await logEvent(uploadId, "warn", `Non-critical step(s) failed: ${summary}. Proceeding with submission anyway.`);
     }
-    const r = await publishStep(uploadId, "publish:submit", "Submit for review", 99, async () => {
+    const r = await publishStep(uploadId, "publish:submit", "Submit for review", 97, async () => {
       await submitForReview(appId, { onLog });
     });
     if (r.ok) {
-      await setStatus(uploadId, { status: "SUBMITTED", currentStep: "submitted", progress: 100 });
+      await setStatus(uploadId, { status: "SUBMITTED", currentStep: "submitted", progress: 98 });
       await logEvent(uploadId, "info", "Successfully uploaded + submitted to Huawei AppGallery");
     } else {
       failures.push({ step: "Submit for review", error: r.error! });
-      await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 100 });
+      await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 98 });
       await logEvent(uploadId, "error", `Submit for review failed: ${r.error}. Submit manually in the console.`);
     }
   } else {
-    await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 100 });
+    await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 98 });
     await logEvent(uploadId, "info", "APK + metadata uploaded. Auto-submit is off; submit manually in the console.");
+  }
+
+  // 7) Content rating — LAST step (requires Category + Countries already set).
+  //    Uses Playwright CDP to automate the console questionnaire.
+  if (template.autoContentRating) {
+    const r = await publishStep(uploadId, "publish:rating", "Auto-answer content rating via Playwright (all No)", 99, async () => {
+      await submitAgeRatingAllNo(appId, {
+        onLog: (line) => logEvent(uploadId, "info", `[age-rating] ${line}`),
+      });
+    });
+    if (!r.ok) {
+      failures.push({ step: "Content rating", error: r.error! });
+      await logEvent(uploadId, "warn", `Content rating failed: ${r.error}. Complete it manually in the Huawei console.`);
+    }
+  }
+
+  if (failures.length === 0) {
+    await setStatus(uploadId, { currentStep: "completed", progress: 100 });
+  } else {
+    await setStatus(uploadId, { progress: 100 });
   }
 }
 

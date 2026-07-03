@@ -412,101 +412,66 @@ export async function uploadScreenshots(
   await opts.onLog?.(`${uploadedFiles.length} screenshots registered successfully`);
 }
 
-// ---------------------- Content Rating (IARC questionnaire) ----------------------
-
-// The Huawei Connect Publishing API exposes two age-rating endpoints:
-//   GET  /api/publish/v2/age-rating/questionnaire?appId=X  -> get questions
-//   POST /api/publish/v2/age-rating/submit?appId=X         -> submit answers
+// ---------------------- Content Rating via Playwright CDP ----------------------
 //
-// The questionnaire has 11 categories. Each category has one or more questions.
-// For "answer all No" we fetch the questions, map every answer to the "No"
-// option, and submit.
-
-interface AgeRatingQuestion {
-  questionId: string;
-  options: { optionId: string; optionName: string }[];
-}
-
-interface AgeRatingCategory {
-  categoryId: string;
-  categoryName: string;
-  questions: AgeRatingQuestion[];
-}
-
-interface AgeRatingQuestionnaire {
-  categories: AgeRatingCategory[];
-  templateId?: string;
-}
-
-export async function fetchAgeRatingQuestionnaire(
-  appId: string,
-  opts: ApplyOptions = {},
-): Promise<AgeRatingQuestionnaire> {
-  const creds = opts.creds ?? huaweiCredsFromEnv();
-  const token = await getConnectToken(creds);
-  const url = `${CONNECT_BASE}/publish/v2/age-rating/questionnaire?appId=${encodeURIComponent(appId)}`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}`, client_id: creds.clientId },
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`age-rating questionnaire fetch failed (HTTP ${res.status}): ${text}`);
-  const body = JSON.parse(text) as RetEnvelope & AgeRatingQuestionnaire;
-  if ((body.ret?.code ?? 0) !== 0) {
-    throw new Error(`age-rating questionnaire failed (code ${body.ret?.code}): ${body.ret?.msg ?? text}`);
-  }
-  return body;
-}
+// Huawei does NOT expose a working age-rating API (returns 404). The content
+// rating questionnaire must be completed via the console UI. This function
+// spawns scripts/content-rating.js which connects to an existing Chrome
+// session via CDP and automates the questionnaire.
+//
+// Prerequisites:
+//   - Chrome must be running with --remote-debugging-port
+//   - Chrome must be logged into Huawei AppGallery Connect
+//   - The app must already have Category and Countries set (mandatory order)
+//   - Set CDP_URL env var (default: http://localhost:9222)
 
 export async function submitAgeRatingAllNo(
   appId: string,
   opts: ApplyOptions = {},
 ): Promise<void> {
-  await opts.onLog?.("Fetching age-rating questionnaire");
-  const questionnaire = await fetchAgeRatingQuestionnaire(appId, opts);
+  const cdpUrl = process.env.CDP_URL || "http://localhost:9222";
+  await opts.onLog?.(`Running content rating automation via Playwright CDP (${cdpUrl})`);
 
-  const answers: { questionId: string; optionId: string }[] = [];
-  for (const cat of questionnaire.categories ?? []) {
-    for (const q of cat.questions ?? []) {
-      const noOpt = q.options.find(
-        (o) => o.optionName.toLowerCase() === "no",
-      );
-      if (noOpt) {
-        answers.push({ questionId: q.questionId, optionId: noOpt.optionId });
-      } else if (q.options.length > 0) {
-        answers.push({ questionId: q.questionId, optionId: q.options[q.options.length - 1].optionId });
+  const scriptPath = path.join(process.cwd(), "scripts", "content-rating.js");
+  try {
+    await fs.access(scriptPath);
+  } catch {
+    throw new Error(
+      `Content rating script not found at ${scriptPath}. ` +
+      `Ensure scripts/content-rating.js exists in the project root.`
+    );
+  }
+
+  const { execFile } = await import("child_process");
+  const { promisify } = await import("util");
+  const execFileAsync = promisify(execFile);
+
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      "node",
+      [scriptPath, appId, cdpUrl],
+      { timeout: 120_000, env: { ...process.env, CDP_URL: cdpUrl } },
+    );
+    if (stdout) {
+      for (const line of stdout.split("\n").filter(Boolean)) {
+        await opts.onLog?.(`[content-rating] ${line}`);
       }
     }
+    if (stderr) {
+      for (const line of stderr.split("\n").filter(Boolean)) {
+        await opts.onLog?.(`[content-rating:err] ${line}`);
+      }
+    }
+    await opts.onLog?.("Content rating (all No) completed via Playwright");
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (msg.includes("ECONNREFUSED") || msg.includes("connect")) {
+      throw new Error(
+        `Cannot connect to Chrome CDP at ${cdpUrl}. ` +
+        `Ensure Chrome is running with remote debugging enabled and you are logged into Huawei console. ` +
+        `Set CDP_URL env var if using a different port.`
+      );
+    }
+    throw new Error(`Content rating automation failed: ${msg}`);
   }
-
-  await opts.onLog?.(`Submitting ${answers.length} answers (all "No")`);
-  const creds = opts.creds ?? huaweiCredsFromEnv();
-  const token = await getConnectToken(creds);
-  const url = `${CONNECT_BASE}/publish/v2/age-rating/submit?appId=${encodeURIComponent(appId)}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      client_id: creds.clientId,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      templateId: questionnaire.templateId,
-      answers,
-    }),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`age-rating submit failed (HTTP ${res.status}): ${text}`);
-  }
-  let body: RetEnvelope = {};
-  try {
-    body = JSON.parse(text) as RetEnvelope;
-  } catch {
-    // Non-JSON 2xx is success
-  }
-  const code = body.ret?.code ?? 0;
-  if (code !== 0) {
-    throw new Error(`age-rating submit failed (code ${code}): ${body.ret?.msg ?? text}`);
-  }
-  await opts.onLog?.("Content rating (all No) submitted successfully");
 }
