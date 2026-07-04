@@ -142,6 +142,11 @@ async function ensureLoggedIn(page) {
   }
   await delay(8000);
 
+  const afterLoginText = await visibleBodyText(page);
+  if (/Please complete verification|Drag the pieces|Switch To Voice Verification|captcha/i.test(afterLoginText)) {
+    throw new Error('Huawei CAPTCHA required. Open the noVNC browser, complete the slider/voice verification manually, then rerun the login script.');
+  }
+
   await handleVerification(page);
   await handleTrustPrompt(page);
   await acceptCookies(page);
