@@ -7,6 +7,7 @@
 // fails (e.g. "US not exist" for new apps). It navigates the Huawei console
 // to set category and countries via the UI.
 const { chromium } = require('playwright');
+const { ensureLoggedIn } = require('./huawei-login-helper');
 
 const APP_ID = process.argv[2];
 const CDP_URL = process.argv[3] || process.env.CDP_URL || 'http://localhost:9222';
@@ -17,93 +18,6 @@ if (!APP_ID) {
 }
 
 async function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-async function ensureLoggedIn(page) {
-  console.log('Checking login status...');
-  await page.goto('https://developer.huawei.com/consumer/en/service/josp/agc/index.html#/myApp', {
-    waitUntil: 'domcontentloaded', timeout: 30000
-  });
-  await delay(6000);
-
-  const needsLogin = await page.evaluate(() => {
-    const text = document.body.innerText || '';
-    return !text.includes('jawad') && !text.includes('HANANE') &&
-           (text.includes('Sign in') || text.includes('Log in') || text.includes('HUAWEI ID'));
-  });
-
-  if (!needsLogin) {
-    console.log('Already logged in.');
-    await page.evaluate(() => {
-      const btns = document.querySelectorAll('button, div, a');
-      for (const b of btns) {
-        if ((b.textContent || '').trim() === 'Accept All' && b.offsetWidth > 0) { b.click(); return; }
-      }
-    });
-    return;
-  }
-
-  const email = process.env.HUAWEI_LOGIN_EMAIL;
-  const password = process.env.HUAWEI_LOGIN_PASSWORD;
-  if (!email || !password) {
-    throw new Error('Session expired and HUAWEI_LOGIN_EMAIL / HUAWEI_LOGIN_PASSWORD not set.');
-  }
-
-  console.log('Session expired. Auto-logging in...');
-  await page.goto('https://developer.huawei.com/consumer/en/service/josp/agc/index.html', {
-    waitUntil: 'domcontentloaded', timeout: 30000
-  });
-  await delay(3000);
-
-  await page.evaluate(() => {
-    const els = document.querySelectorAll('a, button, div, span');
-    for (const el of els) {
-      const text = (el.textContent || '').trim();
-      if ((text === 'Sign in' || text === 'Log in') && el.offsetWidth > 0) { el.click(); return; }
-    }
-  });
-  await delay(5000);
-
-  const emailInput = page.locator('input.hwid-input.userAccount');
-  await emailInput.click();
-  await delay(200);
-  await emailInput.fill(email);
-  await delay(500);
-
-  const pwdInput = page.locator('input.hwid-input.hwid-input-pwd');
-  await pwdInput.click();
-  await delay(200);
-  await pwdInput.fill(password);
-  await delay(1000);
-
-  const loginBtn = page.locator('.hwid-login-btn');
-  await loginBtn.click({ force: true });
-  await delay(8000);
-
-  const postLoginText = await page.evaluate(() => document.body.innerText);
-  if (postLoginText.includes('Trust this browser')) {
-    await page.evaluate(() => {
-      const els = document.querySelectorAll('div, span, a, button');
-      for (const el of els) {
-        if ((el.textContent || '').trim() === 'TRUST' && el.offsetWidth > 0) { el.click(); return; }
-      }
-    });
-    await delay(8000);
-  }
-
-  await page.evaluate(() => {
-    const btns = document.querySelectorAll('button, div, a');
-    for (const b of btns) {
-      if ((b.textContent || '').trim() === 'Accept All' && b.offsetWidth > 0) { b.click(); return; }
-    }
-  });
-  await delay(2000);
-
-  await page.goto('https://developer.huawei.com/consumer/en/service/josp/agc/index.html#/myApp', {
-    waitUntil: 'domcontentloaded', timeout: 30000
-  });
-  await delay(5000);
-  console.log('Login complete.');
-}
 
 (async () => {
   console.log(`Connecting to Chrome CDP at ${CDP_URL}...`);

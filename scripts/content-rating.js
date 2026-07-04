@@ -8,6 +8,7 @@
 // Env vars: HUAWEI_LOGIN_EMAIL, HUAWEI_LOGIN_PASSWORD (for auto-login)
 // Prerequisites: Category and Countries must already be set (mandatory order)
 const { chromium } = require('playwright');
+const { ensureLoggedIn } = require('./huawei-login-helper');
 
 const APP_ID = process.argv[2];
 const CDP_URL = process.argv[3] || process.env.CDP_URL || 'http://localhost:9222';
@@ -15,120 +16,6 @@ const CDP_URL = process.argv[3] || process.env.CDP_URL || 'http://localhost:9222
 if (!APP_ID) {
   console.error('Usage: node scripts/content-rating.js <appId> [cdpUrl]');
   process.exit(1);
-}
-
-async function ensureLoggedIn(page) {
-  console.log('Checking Huawei login status...');
-  await page.goto('https://developer.huawei.com/consumer/en/service/josp/agc/index.html#/myApp', {
-    waitUntil: 'domcontentloaded', timeout: 30000
-  });
-  await page.waitForTimeout(6000);
-
-  const needsLogin = await page.evaluate(() => {
-    const text = document.body.innerText || '';
-    return !text.includes('jawad') && !text.includes('HANANE') &&
-           (text.includes('Sign in') || text.includes('Log in') || text.includes('HUAWEI ID'));
-  });
-
-  if (!needsLogin) {
-    console.log('Already logged in.');
-    // Accept cookies if present
-    await page.evaluate(() => {
-      const btns = document.querySelectorAll('button, div, a');
-      for (const b of btns) {
-        if ((b.textContent || '').trim() === 'Accept All' && b.offsetWidth > 0) { b.click(); return; }
-      }
-    });
-    return;
-  }
-
-  const email = process.env.HUAWEI_LOGIN_EMAIL;
-  const password = process.env.HUAWEI_LOGIN_PASSWORD;
-  if (!email || !password) {
-    throw new Error('Session expired and HUAWEI_LOGIN_EMAIL / HUAWEI_LOGIN_PASSWORD not set. Cannot auto-login.');
-  }
-
-  console.log('Session expired. Auto-logging in...');
-
-  // Navigate to AGC to get fresh OAuth redirect to login page
-  await page.goto('https://developer.huawei.com/consumer/en/service/josp/agc/index.html', {
-    waitUntil: 'domcontentloaded', timeout: 30000
-  });
-  await page.waitForTimeout(3000);
-
-  // Click Sign in if visible
-  await page.evaluate(() => {
-    const els = document.querySelectorAll('a, button, div, span');
-    for (const el of els) {
-      const text = (el.textContent || '').trim();
-      if ((text === 'Sign in' || text === 'Log in') && el.offsetWidth > 0 && el.offsetHeight > 0) {
-        el.click();
-        return;
-      }
-    }
-  });
-  await page.waitForTimeout(5000);
-
-  // Fill email
-  const emailInput = page.locator('input.hwid-input.userAccount');
-  await emailInput.click();
-  await page.waitForTimeout(200);
-  await emailInput.fill(email);
-  await page.waitForTimeout(500);
-
-  // Fill password
-  const pwdInput = page.locator('input.hwid-input.hwid-input-pwd');
-  await pwdInput.click();
-  await page.waitForTimeout(200);
-  await pwdInput.fill(password);
-  await page.waitForTimeout(1000);
-
-  // Click LOG IN via Playwright (force click to bypass disabled state)
-  const loginBtn = page.locator('.hwid-login-btn');
-  await loginBtn.click({ force: true });
-  console.log('Clicked LOG IN');
-  await page.waitForTimeout(8000);
-
-  // Handle Trust dialog if shown
-  const postLoginText = await page.evaluate(() => document.body.innerText);
-  if (postLoginText.includes('Trust this browser')) {
-    console.log('Clicking TRUST...');
-    await page.evaluate(() => {
-      const els = document.querySelectorAll('div, span, a, button');
-      for (const el of els) {
-        if ((el.textContent || '').trim() === 'TRUST' && el.offsetWidth > 0) { el.click(); return; }
-      }
-    });
-    await page.waitForTimeout(8000);
-  }
-
-  if (postLoginText.includes('Verify identity') || postLoginText.includes('verification code')) {
-    throw new Error('Verification code required. Login manually first or trust browser.');
-  }
-
-  // Accept cookies if shown
-  await page.evaluate(() => {
-    const btns = document.querySelectorAll('button, div, a');
-    for (const b of btns) {
-      if ((b.textContent || '').trim() === 'Accept All' && b.offsetWidth > 0) { b.click(); return; }
-    }
-  });
-  await page.waitForTimeout(2000);
-
-  // Verify login by navigating to My Apps
-  await page.goto('https://developer.huawei.com/consumer/en/service/josp/agc/index.html#/myApp', {
-    waitUntil: 'domcontentloaded', timeout: 30000
-  });
-  await page.waitForTimeout(5000);
-
-  const loggedIn = await page.evaluate(() => {
-    const text = document.body.innerText || '';
-    return text.includes('jawad') || text.includes('HANANE') || text.includes('My apps');
-  });
-  if (!loggedIn) {
-    throw new Error('Auto-login failed. Could not verify logged-in state.');
-  }
-  console.log('Auto-login successful!');
 }
 
 (async () => {
