@@ -122,10 +122,24 @@ async function ensureLoggedIn(page) {
   await clickVisibleText(page, /^(Sign in|Log in)$/i);
   await delay(5000);
 
-  await fillVisibleInput(page, /Phone\/Email\/Login ID|userAccount|Email|Login ID/i, email);
-  await fillVisibleInput(page, /Password|hwid-input-pwd/i, password);
+  const emailInput = page.locator('input.hwid-input.userAccount, input[placeholder="Phone/Email/Login ID"]').first();
+  await emailInput.click({ timeout: 5000 }).catch(() => undefined);
+  await emailInput.fill(email, { timeout: 5000 }).catch(async () => {
+    await fillVisibleInput(page, /Phone\/Email\/Login ID|userAccount|Email|Login ID/i, email);
+  });
+  await delay(500);
+
+  const passwordInput = page.locator('input.hwid-input.hwid-input-pwd, input[placeholder="Password"]').first();
+  await passwordInput.click({ timeout: 5000 }).catch(() => undefined);
+  await passwordInput.fill(password, { timeout: 5000 }).catch(async () => {
+    await fillVisibleInput(page, /Password|hwid-input-pwd/i, password);
+  });
   await delay(1000);
-  if (!(await clickVisibleText(page, /^LOG IN$/i))) {
+
+  const loginButton = page.locator('.hwid-login-btn').first();
+  if (await loginButton.count().catch(() => 0)) {
+    await loginButton.click({ force: true, timeout: 5000 });
+  } else if (!(await clickVisibleText(page, /^LOG IN$/i))) {
     await page.keyboard.press('Enter').catch(() => undefined);
   }
   await delay(8000);
