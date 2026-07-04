@@ -123,17 +123,15 @@ async function ensureLoggedIn(page) {
   await delay(5000);
 
   const emailInput = page.locator('input.hwid-input.userAccount, input[placeholder="Phone/Email/Login ID"]').first();
-  await emailInput.click({ timeout: 5000 }).catch(() => undefined);
-  await emailInput.fill(email, { timeout: 5000 }).catch(async () => {
-    await fillVisibleInput(page, /Phone\/Email\/Login ID|userAccount|Email|Login ID/i, email);
-  });
+  await emailInput.click({ timeout: 5000 });
+  await page.keyboard.press('Control+A').catch(() => undefined);
+  await page.keyboard.type(email, { delay: 20 });
   await delay(500);
 
   const passwordInput = page.locator('input.hwid-input.hwid-input-pwd, input[placeholder="Password"]').first();
-  await passwordInput.click({ timeout: 5000 }).catch(() => undefined);
-  await passwordInput.fill(password, { timeout: 5000 }).catch(async () => {
-    await fillVisibleInput(page, /Password|hwid-input-pwd/i, password);
-  });
+  await passwordInput.click({ timeout: 5000 });
+  await page.keyboard.press('Control+A').catch(() => undefined);
+  await page.keyboard.type(password, { delay: 20 });
   await delay(1000);
 
   const loginButton = page.locator('.hwid-login-btn').first();
