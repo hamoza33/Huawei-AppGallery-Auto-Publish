@@ -17,6 +17,7 @@ interface SessionMeta {
   metadataPrompt: string | null;
   screenshotPrompt: string | null;
   screenshotSource: string;
+  metadataLocales?: string[];
 }
 
 /**
@@ -67,6 +68,7 @@ export async function POST(
       metadataPrompt: meta.metadataPrompt,
       screenshotPrompt: meta.screenshotPrompt,
       screenshotSource: meta.screenshotSource,
+      metadataLocales: meta.metadataLocales ?? ["en-US"],
       autoCreateApp: !meta.huaweiAppId,
     },
   });

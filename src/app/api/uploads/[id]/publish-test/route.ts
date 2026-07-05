@@ -3,6 +3,8 @@ import { promises as fs } from "fs";
 import { prisma } from "@/lib/db";
 import { huaweiCredsFromEnv, resolveAppId, runLane } from "@/lib/fastlane";
 import { DEFAULT_LOCALE } from "@/lib/locales";
+import { resolveAppTemplate } from "@/lib/app-template";
+import { sanitizeCountries, templateIsEmpty } from "@/lib/huawei-app-info";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -78,7 +80,36 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     detail: `${upload.localizations.length} locale(s)${hasDefault ? "" : ` (missing default ${DEFAULT_LOCALE})`}`,
   });
 
-  // 5. Screenshots
+  // 5. Category / countries / app-info template
+  const template = await resolveAppTemplate();
+  checks.push({
+    name: "Template",
+    status: templateIsEmpty(template) ? "fail" : "pass",
+    detail: templateIsEmpty(template) ? "No app-info template configured" : "app-info template is configured",
+  });
+  checks.push({
+    name: "Category",
+    status:
+      typeof template.parentType === "number" &&
+      typeof template.childType === "number" &&
+      typeof template.grandChildType === "number"
+        ? "pass"
+        : "fail",
+    detail:
+      typeof template.parentType === "number" &&
+      typeof template.childType === "number" &&
+      typeof template.grandChildType === "number"
+        ? `${template.parentType} / ${template.childType} / ${template.grandChildType}`
+        : "Category path is missing from the template",
+  });
+  const countries = sanitizeCountries(template.publishCountry);
+  checks.push({
+    name: "Countries",
+    status: countries ? "pass" : "fail",
+    detail: countries ? `${countries.split(",").length} selected, excluding CN` : "Publish country list is missing",
+  });
+
+  // 6. Screenshots
   const shotCount = upload.screenshots.filter((s) => s.locale === DEFAULT_LOCALE).length;
   checks.push({
     name: "Screenshots",
@@ -86,7 +117,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     detail: `${shotCount} screenshot(s) for ${DEFAULT_LOCALE}`,
   });
 
-  // 6. Huawei credentials + app access (live, read-only via the Fastlane plugin)
+  // 7. Huawei credentials + app access (live, read-only via the Fastlane plugin)
   try {
     huaweiCredsFromEnv();
     checks.push({ name: "Huawei credentials", status: "pass", detail: "client_id / client_secret configured" });

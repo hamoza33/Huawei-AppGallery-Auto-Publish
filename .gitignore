@@ -25,3 +25,8 @@ fastlane_runner/.bundle/
 native/appgallerycli/appgallerycli
 fastlane_runner/fastlane/report.xml
 fastlane_runner/fastlane/README.md
+
+# Local runtime data (uploads, build logs)
+data/
+uploads/
+/data/

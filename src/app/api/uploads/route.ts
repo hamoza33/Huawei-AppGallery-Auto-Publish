@@ -3,6 +3,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import crypto from "crypto";
 import { prisma } from "@/lib/db";
+import { normalizeTargetLocales } from "@/lib/locales";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -29,6 +30,7 @@ export async function POST(req: Request) {
   const huaweiAppId = (form.get("huaweiAppId") ?? null) as string | null;
   const metadataPrompt = ((form.get("metadataPrompt") as string | null) ?? "").trim() || null;
   const screenshotPrompt = ((form.get("screenshotPrompt") as string | null) ?? "").trim() || null;
+  const metadataLocales = normalizeTargetLocales(form.getAll("metadataLocales"));
   const rawSource = ((form.get("screenshotSource") as string | null) ?? "vmos").trim();
   const screenshotSource = ["vmos", "ai_openai", "ai_gemini", "template"].includes(rawSource)
     ? rawSource
@@ -56,6 +58,7 @@ export async function POST(req: Request) {
       apkSha256: sha,
       metadataPrompt,
       screenshotPrompt,
+      metadataLocales,
       screenshotSource,
       autoCreateApp: !huaweiAppId,
     },

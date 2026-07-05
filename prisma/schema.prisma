@@ -49,6 +49,7 @@ model Upload {
   screenshotSource String  @default("vmos") // vmos | ai_openai | ai_gemini | template
   metadataPrompt   String?                   // optional custom prompt to steer metadata
   screenshotPrompt String?                   // optional custom prompt to steer screenshots
+  metadataLocales  String[] @default(["en-US"]) // target store-listing languages selected for this upload
   autoCreateApp    Boolean @default(false)   // APK-only flow: auto-resolve/create AGC app
 
   // Pipeline state

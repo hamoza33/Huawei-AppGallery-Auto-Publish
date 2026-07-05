@@ -5,7 +5,7 @@ import { promises as fs } from "fs";
 import { prisma } from "./db";
 import { parseApk } from "./apk-parser";
 import { generateMetadata, translateMetadata } from "./metadata-generator";
-import { TARGET_LOCALES, DEFAULT_LOCALE } from "./locales";
+import { TARGET_LOCALES, DEFAULT_LOCALE, normalizeTargetLocales } from "./locales";
 import { generateScreenshots } from "./screenshots";
 import { resolveAppId, publishApk, updateLocalization, submitForReview } from "./fastlane";
 import { writeFastlaneMetadata, writeChangelog } from "./fastlane-metadata";
@@ -141,14 +141,17 @@ export async function stepGenerateMetadata(uploadId: string) {
 
 export async function stepTranslate(uploadId: string) {
   await setStatus(uploadId, { status: "TRANSLATING", currentStep: "translate", progress: 45 });
+  const upload = await prisma.upload.findUniqueOrThrow({ where: { id: uploadId } });
   const source = await prisma.localization.findUnique({
     where: { uploadId_locale: { uploadId, locale: DEFAULT_LOCALE } },
   });
   if (!source) throw new Error("Source English localization missing");
 
-  for (const target of TARGET_LOCALES) {
+  const selectedLocales = new Set(normalizeTargetLocales(upload.metadataLocales));
+  await logEvent(uploadId, "info", `Selected metadata languages: ${Array.from(selectedLocales).join(", ")}`);
+  for (const target of TARGET_LOCALES.filter((locale) => selectedLocales.has(locale.bcp47))) {
     if (target.bcp47 === DEFAULT_LOCALE) continue;
-    await logEvent(uploadId, "info", `Translating → ${target.bcp47}`);
+    await logEvent(uploadId, "info", `Translating to ${target.bcp47}`);
     try {
       const translated = await translateMetadata(
         {
@@ -325,11 +328,17 @@ export async function stepPublishToHuawei(uploadId: string) {
       if (consoleFallback.ok) {
         templateApplied = true;
       } else {
-        failures.push({ step: "App-info template", error: `API: ${r.error}; Console fallback: ${consoleFallback.error}` });
+        const summary = `API: ${r.error}; Console fallback: ${consoleFallback.error}`;
+        failures.push({ step: "App-info template", error: summary });
+        throw new Error(`Publish failed before APK upload. Countries/category/template were not set. ${summary}`);
       }
     }
   } else {
     await logEvent(uploadId, "info", "[step:publish:template:skip] No app-info template configured");
+  }
+
+  if (!templateApplied) {
+    throw new Error("Publish failed before APK upload. Countries/category/template were not set.");
   }
 
   // 2) Push localized metadata.
@@ -404,14 +413,30 @@ export async function stepPublishToHuawei(uploadId: string) {
     }
   }
 
-  // 6) Submit for review. Non-critical failures (template, screenshots)
-  // should NOT block submission — the APK upload is the only hard gate (already throws above).
+  // 6) Content rating (requires category, countries, and APK).
+  //    Uses Playwright CDP to automate the console questionnaire before submit.
+  if (template.autoContentRating) {
+    const r = await publishStep(uploadId, "publish:rating", "Auto-answer content rating via Playwright (all No)", 97, async () => {
+      await submitAgeRatingAllNo(appId, {
+        onLog: (line) => logEvent(uploadId, "info", `[age-rating] ${line}`),
+      });
+    });
+    if (!r.ok) {
+      failures.push({ step: "Content rating", error: r.error! });
+      throw new Error(`Publish failed before submit. Content rating was not completed: ${r.error}`);
+    }
+  } else {
+    await logEvent(uploadId, "info", "[step:publish:rating:skip] Auto content rating is disabled");
+  }
+
+  // 7) Submit for review. Non-critical failures (metadata/assets) are surfaced
+  // but do not block submission after the hard gates above are complete.
   if (autoSubmit) {
     if (failures.length > 0) {
       const summary = failures.map((f) => `${f.step}: ${f.error}`).join("; ");
       await logEvent(uploadId, "warn", `Non-critical step(s) failed: ${summary}. Proceeding with submission anyway.`);
     }
-    const r = await publishStep(uploadId, "publish:submit", "Submit for review", 97, async () => {
+    const r = await publishStep(uploadId, "publish:submit", "Submit for review", 99, async () => {
       await submitForReview(appId, { onLog });
     });
     if (r.ok) {
@@ -425,20 +450,6 @@ export async function stepPublishToHuawei(uploadId: string) {
   } else {
     await setStatus(uploadId, { status: "UPLOADED", currentStep: "uploaded", progress: 98 });
     await logEvent(uploadId, "info", "APK + metadata uploaded. Auto-submit is off; submit manually in the console.");
-  }
-
-  // 7) Content rating — LAST step (requires Category + Countries already set).
-  //    Uses Playwright CDP to automate the console questionnaire.
-  if (template.autoContentRating) {
-    const r = await publishStep(uploadId, "publish:rating", "Auto-answer content rating via Playwright (all No)", 99, async () => {
-      await submitAgeRatingAllNo(appId, {
-        onLog: (line) => logEvent(uploadId, "info", `[age-rating] ${line}`),
-      });
-    });
-    if (!r.ok) {
-      failures.push({ step: "Content rating", error: r.error! });
-      await logEvent(uploadId, "warn", `Content rating failed: ${r.error}. Complete it manually in the Huawei console.`);
-    }
   }
 
   if (failures.length === 0) {
