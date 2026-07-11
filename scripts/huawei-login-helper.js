@@ -1,3 +1,5 @@
+const { solveSliderCaptcha } = require('./solve-slider');
+
 const ACCOUNT_HOME = 'https://developer.huawei.com/consumer/en/service/josp/agc/index.html#/myApp';
 
 async function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -49,12 +51,27 @@ async function needsLogin(page) {
   return /Sign in|Log in|HUAWEI ID/i.test(text) && !/Apps and atomic services|HANANE|jawad/i.test(text);
 }
 
+// Detect & solve the NetEase Yidun slider CAPTCHA if it is showing.
+// Returns 'solved', 'none', or 'failed'.
+async function maybeSolveCaptcha(page) {
+  const present = await page.evaluate(() => {
+    const el = document.querySelector('.yidun_bg-img');
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }).catch(() => false);
+  if (!present) return 'none';
+  const ok = await solveSliderCaptcha(page, { onLog: (l) => console.log(l) });
+  return ok ? 'solved' : 'failed';
+}
+
 async function handleVerification(page) {
   let text = await visibleBodyText(page);
   if (!/Verify identity|verification code|Email code/i.test(text)) return;
 
   await clickVisibleText(page, /^Get code$/i);
   await delay(1000);
+  await maybeSolveCaptcha(page);
 
   const code = (process.env.HUAWEI_LOGIN_VERIFICATION_CODE || '').trim();
   if (!code) {
@@ -140,11 +157,19 @@ async function ensureLoggedIn(page) {
   } else if (!(await clickVisibleText(page, /^LOG IN$/i))) {
     await page.keyboard.press('Enter').catch(() => undefined);
   }
-  await delay(8000);
+  await delay(4000);
 
+  // A slider CAPTCHA usually appears right after clicking LOG IN. Solve it with OpenCV.
+  const captchaResult = await maybeSolveCaptcha(page);
+  if (captchaResult === 'failed') {
+    throw new Error('Huawei slider CAPTCHA could not be solved automatically. Open the noVNC browser and solve it manually, then rerun.');
+  }
+  await delay(4000);
+
+  // Some flows re-show a CAPTCHA / voice verification variant we cannot solve.
   const afterLoginText = await visibleBodyText(page);
-  if (/Please complete verification|Drag the pieces|Switch To Voice Verification|captcha/i.test(afterLoginText)) {
-    throw new Error('Huawei CAPTCHA required. Open the noVNC browser, complete the slider/voice verification manually, then rerun the login script.');
+  if (/Switch To Voice Verification/i.test(afterLoginText)) {
+    throw new Error('Huawei voice verification required. Open the noVNC browser and complete it manually, then rerun the login script.');
   }
 
   await handleVerification(page);
@@ -159,4 +184,4 @@ async function ensureLoggedIn(page) {
   console.log('Auto-login successful.');
 }
 
-module.exports = { ensureLoggedIn };
+module.exports = { ensureLoggedIn, solveSliderCaptcha, maybeSolveCaptcha };
