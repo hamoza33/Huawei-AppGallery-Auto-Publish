@@ -5,7 +5,7 @@ import { promises as fs } from "fs";
 import { prisma } from "./db";
 import { parseApk } from "./apk-parser";
 import { generateMetadata, translateMetadata } from "./metadata-generator";
-import { TARGET_LOCALES, DEFAULT_LOCALE, normalizeTargetLocales } from "./locales";
+import { TARGET_LOCALES, DEFAULT_LOCALE, normalizeTargetLocales, toHuaweiLocale } from "./locales";
 import { generateScreenshots } from "./screenshots";
 import { resolveAppId, publishApk, updateLocalization, submitForReview } from "./fastlane";
 import { writeFastlaneMetadata, writeChangelog } from "./fastlane-metadata";
@@ -354,27 +354,39 @@ export async function stepPublishToHuawei(uploadId: string) {
     if (!r.ok) failures.push({ step: "Localized metadata", error: r.error! });
   }
 
-  // 3) Upload app icon.
+  // Every localized language in App Information requires its own icon and
+  // screenshots (Huawei flags languages without them as "to be configured" and
+  // blocks the version). Upload the same assets for each selected language.
+  const huaweiLangs =
+    upload.localizations.length > 0
+      ? Array.from(new Set(upload.localizations.map((l) => toHuaweiLocale(l.locale))))
+      : ["en-US"];
+
+  // 3) Upload app icon for every language.
   if (upload.iconPath) {
-    const r = await publishStep(uploadId, "publish:icon", "Upload app icon", 91, async () => {
-      await uploadAppIcon(appId, upload.iconPath!, "en-US", {
-        onLog: (line) => logEvent(uploadId, "info", `[icon] ${line}`),
-      });
+    const r = await publishStep(uploadId, "publish:icon", `Upload app icon (${huaweiLangs.length} languages)`, 91, async () => {
+      for (const lang of huaweiLangs) {
+        await uploadAppIcon(appId, upload.iconPath!, lang, {
+          onLog: (line) => logEvent(uploadId, "info", `[icon:${lang}] ${line}`),
+        });
+      }
     });
     if (!r.ok) failures.push({ step: "App icon", error: r.error! });
   } else {
     await logEvent(uploadId, "warn", "[step:publish:icon:skip] No icon extracted from APK");
   }
 
-  // 4) Upload screenshots.
+  // 4) Upload screenshots for every language.
   if (upload.screenshots && upload.screenshots.length >= 3) {
-    const r = await publishStep(uploadId, "publish:screenshots", `Upload ${upload.screenshots.length} screenshots`, 93, async () => {
+    const r = await publishStep(uploadId, "publish:screenshots", `Upload ${upload.screenshots.length} screenshots (${huaweiLangs.length} languages)`, 93, async () => {
       const screenshotPaths = upload.screenshots
         .sort((a, b) => a.ordering - b.ordering)
         .map((s) => s.path);
-      await uploadScreenshots(appId, screenshotPaths, "en-US", {
-        onLog: (line) => logEvent(uploadId, "info", `[screenshots] ${line}`),
-      });
+      for (const lang of huaweiLangs) {
+        await uploadScreenshots(appId, screenshotPaths, lang, {
+          onLog: (line) => logEvent(uploadId, "info", `[screenshots:${lang}] ${line}`),
+        });
+      }
       await prisma.screenshot.updateMany({
         where: { uploadId },
         data: { uploadedToHuaweiAt: new Date() },
