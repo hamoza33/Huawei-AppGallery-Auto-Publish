@@ -13,6 +13,7 @@
 //
 // Usage: node scripts/setup-app-info.js <appId> [cdpUrl]
 const { chromium } = require('playwright');
+const fs = require('fs');
 const { ensureLoggedIn } = require('./huawei-login-helper');
 
 const APP_ID = process.argv[2];
@@ -21,6 +22,40 @@ const CDP_URL = process.argv[3] || process.env.CDP_URL || 'http://localhost:9222
 if (!APP_ID) {
   console.error('Usage: node scripts/setup-app-info.js <appId> [cdpUrl]');
   process.exit(1);
+}
+
+const LOCK_PATH = '/tmp/huawei-cdp.lock';
+
+// flock-style acquire: try to create the file with 'wx'; if it exists, retry
+// with backoff for up to ~30s. Returns the file descriptor on success, or null.
+function acquireLock(path, timeoutMs = 30000, intervalMs = 500) {
+  const start = Date.now();
+  let fd = null;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      fd = fs.openSync(path, 'wx');
+      return fd;
+    } catch (err) {
+      if (err && err.code === 'EEXIST') {
+        try {
+          const st = fs.statSync(path);
+          if (st && Date.now() - st.mtimeMs > 10 * 60 * 1000) {
+            try { fs.unlinkSync(path); } catch (_) {}
+          }
+        } catch (_) {}
+      } else {
+        throw err;
+      }
+    }
+    const end = Date.now() + intervalMs;
+    while (Date.now() < end) { /* spin-sleep */ }
+  }
+  return null;
+}
+
+function releaseLock(fd, path) {
+  try { if (fd != null) fs.closeSync(fd); } catch (_) {}
+  try { fs.unlinkSync(path); } catch (_) {}
 }
 
 // Games / Role-playing / Incremental games (Huawei category ids).
@@ -94,13 +129,22 @@ async function clickOK(f) {
 }
 
 (async () => {
-  console.log(`Connecting to Chrome CDP at ${CDP_URL}...`);
-  const browser = await chromium.connectOverCDP(CDP_URL);
-  const context = browser.contexts()[0];
-  const pages = context.pages();
-  for (let i = 1; i < pages.length; i++) { try { await pages[i].close(); } catch (_) {} }
-  const page = context.pages()[0] || (await context.newPage());
-  await ensureLoggedIn(page);
+  const lockFd = acquireLock(LOCK_PATH);
+  if (lockFd == null) {
+    console.error('[lock] could not acquire lock at ' + LOCK_PATH + ' after 30s; aborting');
+    process.exit(1);
+  }
+  console.log('[lock] acquired');
+  let ownedPage = null;
+  try {
+    console.log(`Connecting to Chrome CDP at ${CDP_URL}...`);
+    const browser = await chromium.connectOverCDP(CDP_URL);
+    const context = browser.contexts()[0];
+    // Isolate: own a fresh page on the existing context so the keep-alive
+    // timer's page is independent. Do not close other pages.
+    const page = await context.newPage();
+    ownedPage = page;
+    await ensureLoggedIn(page);
 
   await setCategoryViaApi();
 
@@ -258,7 +302,12 @@ async function clickOK(f) {
 
   console.log('APP_INFO_SETUP_SUCCESS');
   await browser.close();
-})().catch((e) => {
-  console.error(`APP_INFO_SETUP_FAILED: ${e.message}`);
-  process.exit(1);
-});
+  } catch (err) {
+    console.error(`APP_INFO_SETUP_FAILED: ${err.message}`);
+    process.exit(1);
+  } finally {
+    if (ownedPage) { try { await ownedPage.close(); } catch (_) {} }
+    releaseLock(lockFd, LOCK_PATH);
+    console.log('[lock] released');
+  }
+})();

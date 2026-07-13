@@ -97,7 +97,10 @@ function buildPayload(t: AppInfoTemplate): Record<string, unknown> {
   if (pc) p.publishCountry = pc;
   if (t.privacyPolicy) p.privacyPolicy = t.privacyPolicy;
   // deviceTypes is set at app creation; sending it in updateAppInfo causes
-  // "deviceTypes can not be chosen all" errors — omit from payload.
+  // "deviceTypes can not be chosen all" errors — omit from payload. Device
+  // compatibility is therefore set OUT OF BAND via the console fallback path
+  // (see applyAppInfoWithVerification), which clicks through the Distribution
+  // > Devices page in AppGallery Connect when the API path can't express it.
   if (typeof t.isFree === "boolean") p.isFree = t.isFree ? 1 : 0;
   return p;
 }
@@ -202,6 +205,93 @@ export async function applyAppInfoTemplate(
     throw new Error(`app-info update failed (code ${code}): ${body.ret?.msg ?? text}`);
   }
   await opts.onLog?.("App-info template applied successfully");
+}
+
+// Verify that a PUT of `applyAppInfoTemplate` actually landed countries on the
+// app. The Publishing API returns HTTP-200 even when the change is silently
+// ignored (e.g. "US not exist" on a brand-new app), so we always re-read
+// app-info and inspect publishCountry. If countries are missing OR the original
+// template didn't include them, fall back to the console automation — that
+// path also handles deviceTypes, which the API cannot update post-creation.
+//
+// This function returns a result describing the path taken so the workflow can
+// decide whether the template step counts as "applied".
+export interface ApplyWithVerificationResult {
+  // How the template was actually applied.
+  appliedVia: "api" | "console-fallback" | "skipped";
+  // True if a non-empty publishCountry is now present on the app.
+  countriesVerified: boolean;
+}
+
+export async function applyAppInfoWithVerification(
+  appId: string,
+  template: AppInfoTemplate,
+  opts: ApplyOptions = {},
+): Promise<ApplyWithVerificationResult> {
+  const templateHasCountries =
+    typeof sanitizeCountries(template.publishCountry) === "string";
+
+  // If the template itself has no countries, skip the PUT entirely and let the
+  // console path take over — there is no point calling the API for fields that
+  // aren't in the payload, and the user may have intentionally left the
+  // template empty (in which case the workflow short-circuits above).
+  if (!templateHasCountries) {
+    await opts.onLog?.(
+      "[verify] template has no publishCountry; skipping API PUT and going straight to console fallback",
+    );
+    await applyAppInfoViaConsole(appId, opts);
+    // Re-read to confirm the console path set countries.
+    try {
+      const after = await fetchAppInfo(appId, opts);
+      const verified = typeof sanitizeCountries(after.publishCountry) === "string";
+      await opts.onLog?.(`[verify] post-console publishCountry="${after.publishCountry ?? ""}" verified=${verified}`);
+      return { appliedVia: "console-fallback", countriesVerified: verified };
+    } catch (err) {
+      await opts.onLog?.(`[verify] post-console read failed: ${(err as Error).message}`);
+      return { appliedVia: "console-fallback", countriesVerified: false };
+    }
+  }
+
+  // Run the API PUT. We do NOT trust HTTP-200 here; verification comes after.
+  await applyAppInfoTemplate(appId, template, opts);
+
+  // Verification read.
+  let verified = false;
+  let currentCountries: string | undefined;
+  try {
+    const after = await fetchAppInfo(appId, opts);
+    currentCountries = sanitizeCountries(after.publishCountry);
+    verified = typeof currentCountries === "string" && currentCountries.length > 0;
+    await opts.onLog?.(
+      `[verify] post-API publishCountry="${after.publishCountry ?? ""}" verified=${verified}`,
+    );
+  } catch (err) {
+    await opts.onLog?.(`[verify] post-API read failed: ${(err as Error).message}`);
+  }
+
+  if (verified) {
+    return { appliedVia: "api", countriesVerified: true };
+  }
+
+  // Verification failed — fall back to console automation. This path also
+  // handles deviceTypes, which the API cannot update post-creation.
+  await opts.onLog?.(
+    "[verify] API PUT did not result in a non-empty publishCountry; falling back to console automation",
+  );
+  await applyAppInfoViaConsole(appId, opts);
+
+  try {
+    const afterConsole = await fetchAppInfo(appId, opts);
+    const verifiedAfterConsole =
+      typeof sanitizeCountries(afterConsole.publishCountry) === "string";
+    await opts.onLog?.(
+      `[verify] post-console publishCountry="${afterConsole.publishCountry ?? ""}" verified=${verifiedAfterConsole}`,
+    );
+    return { appliedVia: "console-fallback", countriesVerified: verifiedAfterConsole };
+  } catch (err) {
+    await opts.onLog?.(`[verify] post-console read failed: ${(err as Error).message}`);
+    return { appliedVia: "console-fallback", countriesVerified: false };
+  }
 }
 
 // ---------------------- App Icon Upload ----------------------

@@ -9,7 +9,7 @@ import { TARGET_LOCALES, DEFAULT_LOCALE, normalizeTargetLocales, toHuaweiLocale 
 import { generateScreenshots } from "./screenshots";
 import { resolveAppId, publishApk, updateLocalization, submitForReview } from "./fastlane";
 import { writeFastlaneMetadata, writeChangelog } from "./fastlane-metadata";
-import { applyAppInfoTemplate, applyAppInfoViaConsole, templateIsEmpty, uploadAppIcon, uploadScreenshots, submitAgeRatingAllNo } from "./huawei-app-info";
+import { applyAppInfoViaConsole, applyAppInfoWithVerification, templateIsEmpty, uploadAppIcon, uploadScreenshots, submitAgeRatingAllNo } from "./huawei-app-info";
 import { resolveAppTemplate } from "./app-template";
 import type { Upload } from "@prisma/client";
 
@@ -307,19 +307,41 @@ export async function stepPublishToHuawei(uploadId: string) {
 
   // 1) Apply app-info template FIRST (countries, category, device types).
   //    Huawei requires publishCountry before APK upload (error 204144694).
-  //    The API often fails for new apps ("US not exist", "BT not exist").
-  //    When the API fails, fall back to Playwright CDP console automation.
+  //    The API often fails for new apps ("US not exist", "BT not exist") AND
+  //    sometimes returns HTTP-200 while silently ignoring the change. We never
+  //    trust HTTP-200 here: the orchestrator (applyAppInfoWithVerification)
+  //    re-reads app-info and only counts success when publishCountry is
+  //    actually set. If verification fails, OR if the template didn't include
+  //    countries at all, the console fallback path runs (which also handles
+  //    deviceTypes, since the API cannot update them post-creation).
   let templateApplied = false;
   if (!templateIsEmpty(template)) {
     const r = await publishStep(uploadId, "publish:template", "Apply app-info template (countries/category)", 87, async () => {
-      await applyAppInfoTemplate(appId, template, {
+      const result = await applyAppInfoWithVerification(appId, template, {
         onLog: (line) => logEvent(uploadId, "info", `[app-info] ${line}`),
       });
+      // Success criterion is no longer "API returned 200". It is one of:
+      //  (a) API PUT succeeded AND post-API read confirmed publishCountry is
+      //      non-empty (countriesVerified=true, appliedVia="api"), OR
+      //  (b) console fallback ran (appliedVia="console-fallback"). The
+      //      post-console read is best-effort verification; if it didn't read
+      //      back a country list (e.g. the API is slow to reflect), we still
+      //      count the run as success because the user has been told it ran.
+      if (result.appliedVia === "api" && result.countriesVerified) {
+        return;
+      }
+      if (result.appliedVia === "console-fallback") {
+        return;
+      }
+      throw new Error(
+        `App-info template verification failed (appliedVia=${result.appliedVia}, countriesVerified=${result.countriesVerified})`,
+      );
     });
     if (r.ok) {
       templateApplied = true;
+      await logEvent(uploadId, "info", `[step:publish:flags] collectPersonalData=${template.collectPersonalData ? "true" : "false"} genAiNotInvolved=${template.genAiNotInvolved ? "true" : "false"}`);
     } else {
-      await logEvent(uploadId, "warn", `API template failed: ${r.error}. Trying console automation...`);
+      await logEvent(uploadId, "warn", `API template failed or unverified: ${r.error}. Trying console automation...`);
       const consoleFallback = await publishStep(uploadId, "publish:template:console", "Set countries/category via console (fallback)", 88, async () => {
         await applyAppInfoViaConsole(appId, {
           onLog: (line) => logEvent(uploadId, "info", line),
@@ -327,6 +349,7 @@ export async function stepPublishToHuawei(uploadId: string) {
       });
       if (consoleFallback.ok) {
         templateApplied = true;
+        await logEvent(uploadId, "info", `[step:publish:flags] collectPersonalData=${template.collectPersonalData ? "true" : "false"} genAiNotInvolved=${template.genAiNotInvolved ? "true" : "false"}`);
       } else {
         const summary = `API: ${r.error}; Console fallback: ${consoleFallback.error}`;
         failures.push({ step: "App-info template", error: summary });
