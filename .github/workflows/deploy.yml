@@ -12,6 +12,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Verify SSH key
+        run: |
+          echo "Key length: $(echo -n "${{ secrets.SSH }}" | wc -c)"
+          echo "First line: $(echo "${{ secrets.SSH }}" | head -1)"
+          echo "Last line: $(echo "${{ secrets.SSH }}" | tail -1)"
+          echo "${{ secrets.SSH }}" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+          ssh-keygen -y -f /tmp/deploy_key > /tmp/deploy_key.pub 2>&1 && echo "Key is valid" || echo "Key is INVALID"
+
       - name: Deploy to VPS via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -19,6 +28,8 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH }}
           port: ${{ secrets.SSH_PORT || '22' }}
+          debug: true
+          script_stop: false
           script: |
             cd /home/aichaguimaoune/apps/huawei-appgallery-autopublish
             git pull origin devin/huawei-autopublish-fastlane
