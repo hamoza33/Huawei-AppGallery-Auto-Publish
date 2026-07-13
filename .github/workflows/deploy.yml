@@ -1,0 +1,27 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - devin/huawei-autopublish-fastlane
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to VPS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH }}
+          port: ${{ secrets.SSH_PORT || '22' }}
+          script: |
+            cd /home/aichaguimaoune/apps/huawei-appgallery-autopublish
+            git pull origin devin/huawei-autopublish-fastlane
+            npm ci
+            npx prisma migrate deploy || true
+            systemctl restart huawei-worker || pm2 restart all || true
