@@ -418,29 +418,31 @@ function LocalizationEditor({
 }
 
 // Publish sub-step definitions for the progress panel.
-const PUBLISH_STEP_DEFS: { id: string; label: string }[] = [
-  { id: "publish:template", label: "Countries / Category / Template" },
-  { id: "publish:metadata", label: "Localized metadata" },
-  { id: "publish:icon", label: "App icon" },
-  { id: "publish:screenshots", label: "Screenshots" },
-  { id: "publish:apk", label: "Upload APK" },
-  { id: "publish:rating", label: "Content rating" },
-  { id: "publish:submit", label: "Submit for review" },
+const PUBLISH_STEP_DEFS: { ids: string[]; label: string }[] = [
+  { ids: ["publish:template", "publish:template:console"], label: "Template" },
+  { ids: ["publish:template", "publish:template:console"], label: "Category" },
+  { ids: ["publish:template", "publish:template:console"], label: "Countries" },
+  { ids: ["publish:metadata"], label: "Localized metadata" },
+  { ids: ["publish:icon"], label: "App icon" },
+  { ids: ["publish:screenshots"], label: "Screenshots" },
+  { ids: ["publish:apk"], label: "Upload APK" },
+  { ids: ["publish:rating"], label: "Content rating" },
+  { ids: ["publish:submit"], label: "Submit for review" },
 ];
 
 function deriveStepStatus(
-  stepId: string,
+  stepIds: string[],
   currentStep: string | undefined,
   events: UploadEvent[],
   uploadStatus: string,
 ): "pending" | "running" | "done" | "failed" | "skipped" {
-  const doneMsg = events.find((e) => e.message.includes(`[step:${stepId}:done]`));
+  const doneMsg = events.find((e) => stepIds.some((stepId) => e.message.includes(`[step:${stepId}:done]`)));
   if (doneMsg) return "done";
-  const failMsg = events.find((e) => e.message.includes(`[step:${stepId}:fail]`));
+  const failMsg = events.find((e) => stepIds.some((stepId) => e.message.includes(`[step:${stepId}:fail]`)));
   if (failMsg) return "failed";
-  const skipMsg = events.find((e) => e.message.includes(`[step:${stepId}:skip]`));
+  const skipMsg = events.find((e) => stepIds.some((stepId) => e.message.includes(`[step:${stepId}:skip]`)));
   if (skipMsg) return "skipped";
-  if (currentStep === stepId && uploadStatus === "UPLOADING_TO_HUAWEI") return "running";
+  if (currentStep && stepIds.includes(currentStep) && uploadStatus === "UPLOADING_TO_HUAWEI") return "running";
   return "pending";
 }
 
@@ -462,9 +464,9 @@ function PublishStepsPanel({ upload }: { upload: UploadData }) {
       </h3>
       <ul className="space-y-1.5 text-sm">
         {PUBLISH_STEP_DEFS.map((def) => {
-          const status = deriveStepStatus(def.id, upload.currentStep, upload.events, upload.status);
+          const status = deriveStepStatus(def.ids, upload.currentStep, upload.events, upload.status);
           return (
-            <li key={def.id} className="flex items-center gap-2">
+            <li key={def.label} className="flex items-center gap-2">
               <StepIcon status={status} />
               <span className={status === "running" ? "font-medium" : status === "failed" ? "text-red-700" : ""}>
                 {def.label}

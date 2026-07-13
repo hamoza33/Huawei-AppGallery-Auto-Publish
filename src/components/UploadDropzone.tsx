@@ -1,6 +1,7 @@
 "use client";
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { DEFAULT_LOCALE, TARGET_LOCALES } from "@/lib/locales";
 
 interface AppOption {
   id: string;
@@ -25,6 +26,7 @@ export function UploadDropzone({ apps }: { apps: AppOption[] }) {
   const [screenshotSource, setScreenshotSource] = useState("vmos");
   const [metadataPrompt, setMetadataPrompt] = useState("");
   const [screenshotPrompt, setScreenshotPrompt] = useState("");
+  const [metadataLocales, setMetadataLocales] = useState<string[]>(TARGET_LOCALES.map((locale) => locale.bcp47));
   const [isUploading, setIsUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [uploadPhase, setUploadPhase] = useState("");
@@ -54,6 +56,7 @@ export function UploadDropzone({ apps }: { apps: AppOption[] }) {
           totalChunks,
           huaweiAppId: selectedAppId || undefined,
           screenshotSource,
+          metadataLocales,
           metadataPrompt: metadataPrompt.trim() || undefined,
           screenshotPrompt: screenshotPrompt.trim() || undefined,
         }),
@@ -139,6 +142,7 @@ export function UploadDropzone({ apps }: { apps: AppOption[] }) {
     form.append("file", file);
     if (selectedAppId) form.append("huaweiAppId", selectedAppId);
     form.append("screenshotSource", screenshotSource);
+    for (const locale of metadataLocales) form.append("metadataLocales", locale);
     if (metadataPrompt.trim()) form.append("metadataPrompt", metadataPrompt.trim());
     if (screenshotPrompt.trim()) form.append("screenshotPrompt", screenshotPrompt.trim());
 
@@ -168,6 +172,16 @@ export function UploadDropzone({ apps }: { apps: AppOption[] }) {
 
   const activeHint = SCREENSHOT_SOURCES.find((s) => s.value === screenshotSource)?.hint;
   const isAi = screenshotSource === "ai_openai" || screenshotSource === "ai_gemini";
+  const selectedLocaleCount = metadataLocales.length;
+
+  function toggleLocale(locale: string) {
+    if (locale === DEFAULT_LOCALE) return;
+    setMetadataLocales((current) =>
+      current.includes(locale)
+        ? current.filter((value) => value !== locale)
+        : [...current, locale],
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -222,6 +236,31 @@ export function UploadDropzone({ apps }: { apps: AppOption[] }) {
           </p>
         </div>
       )}
+
+      <div>
+        <label className="label">Metadata languages</label>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {TARGET_LOCALES.map((locale) => (
+            <label
+              key={locale.bcp47}
+              className="flex items-center gap-2 rounded-md border border-neutral-200 px-3 py-2 text-sm"
+            >
+              <input
+                type="checkbox"
+                checked={metadataLocales.includes(locale.bcp47)}
+                disabled={locale.bcp47 === DEFAULT_LOCALE}
+                onChange={() => toggleLocale(locale.bcp47)}
+              />
+              <span>
+                {locale.label} <span className="text-xs text-neutral-400">{locale.bcp47}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <p className="mt-1 text-xs text-neutral-500">
+          {selectedLocaleCount} language{selectedLocaleCount === 1 ? "" : "s"} will be generated and uploaded. English is always included as the default listing.
+        </p>
+      </div>
 
       <div>
         <label className="label">Metadata prompt (optional)</label>

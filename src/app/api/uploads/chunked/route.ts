@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import crypto from "crypto";
+import { normalizeTargetLocales } from "@/lib/locales";
 
 export const runtime = "nodejs";
 
@@ -46,6 +47,7 @@ export async function POST(req: Request) {
       metadataPrompt: body.metadataPrompt || null,
       screenshotPrompt: body.screenshotPrompt || null,
       screenshotSource: body.screenshotSource || "vmos",
+      metadataLocales: normalizeTargetLocales(body.metadataLocales),
       createdAt: Date.now(),
     }),
   );

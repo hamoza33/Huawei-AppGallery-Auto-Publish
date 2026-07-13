@@ -20,6 +20,19 @@ export type TargetLocale = (typeof TARGET_LOCALES)[number];
 
 export const DEFAULT_LOCALE = "en-US";
 
+export function normalizeTargetLocales(values: unknown): string[] {
+  const allowed = new Set<string>(TARGET_LOCALES.map((locale) => locale.bcp47));
+  const raw = Array.isArray(values)
+    ? values
+    : typeof values === "string"
+      ? values.split(",")
+      : [];
+  const selected = raw
+    .map((value) => String(value).trim())
+    .filter((value) => allowed.has(value));
+  return Array.from(new Set([DEFAULT_LOCALE, ...selected]));
+}
+
 export function toHuaweiLocale(bcp47: string): string {
   const found = TARGET_LOCALES.find((l) => l.bcp47 === bcp47);
   return found?.huawei ?? bcp47;
