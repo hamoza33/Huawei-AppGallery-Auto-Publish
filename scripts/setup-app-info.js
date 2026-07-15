@@ -1,19 +1,20 @@
-// App Info Setup via Playwright CDP (fallback when the API template step fails).
-//
-// Sets everything Huawei rejects via API for a brand-new app's first version:
-//   - Category cascade (Games / Role-playing / Incremental games) via the API
-//     (this DOES work for new apps; only publishCountry is rejected).
-//   - Compatible devices: Mobile phone + Tablet          (console, App Info page)
-//   - Secondary category: Casual game                    (console, App Info page)
-//   - Distribution countries: all except Chinese mainland (console, Version page)
-//
-// It verifies each console change actually persisted and exits non-zero if not,
-// so the publish workflow hard-stops instead of uploading the APK with an empty
-// country list (Huawei error 204144694 distContryList is empty).
-//
+// Setup app-info: countries, category, privacy policy via CDP automation
 // Usage: node scripts/setup-app-info.js <appId> [cdpUrl]
+// Load .env manually
+(() => {
+  try {
+    const fs = require('fs');
+    const env = fs.readFileSync(require('path').join(__dirname, '..', '.env'), 'utf8');
+    for (const line of env.split('\n')) {
+      const m = line.match(/^([^#=]+)=(.*)$/);
+      if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["\']|["\']$/g, '');
+    }
+  } catch (_) {}
+})();
 const { chromium } = require('playwright');
+const fetch = require('node-fetch');
 const fs = require('fs');
+const path = require('path');
 const { ensureLoggedIn } = require('./huawei-login-helper');
 
 const APP_ID = process.argv[2];
@@ -26,8 +27,6 @@ if (!APP_ID) {
 
 const LOCK_PATH = '/tmp/huawei-cdp.lock';
 
-// flock-style acquire: try to create the file with 'wx'; if it exists, retry
-// with backoff for up to ~30s. Returns the file descriptor on success, or null.
 function acquireLock(path, timeoutMs = 30000, intervalMs = 500) {
   const start = Date.now();
   let fd = null;
@@ -48,7 +47,7 @@ function acquireLock(path, timeoutMs = 30000, intervalMs = 500) {
       }
     }
     const end = Date.now() + intervalMs;
-    while (Date.now() < end) { /* spin-sleep */ }
+    while (Date.now() < end) { /* spin */ }
   }
   return null;
 }
@@ -58,41 +57,70 @@ function releaseLock(fd, path) {
   try { fs.unlinkSync(path); } catch (_) {}
 }
 
-// Games / Role-playing / Incremental games (Huawei category ids).
-const CATEGORY = { parentType: 2, childType: 20, grandChildType: 10115 };
-const CONNECT_BASE = 'https://connect-api.cloud.huawei.com/api';
-
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function fail(msg) {
-  console.error(`APP_INFO_SETUP_FAILED: ${msg}`);
-  process.exit(1);
+// Wait for login session to fully settle after ensureLoggedIn completes.
+async function waitForSessionSettled(page, maxWaitMs = 30000) {
+  console.log('[login-settle] Waiting for session to settle after login...');
+  const deadline = Date.now() + maxWaitMs;
+  try {
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+  } catch (_) {}
+  await delay(4000);
+  const url = page.url();
+  console.log([login-settle] Current URL: );
+  if (/login|cas|auth/i.test(url)) {
+    console.log('[login-settle] Still on auth page, waiting more...');
+    for (let i = 0; i < 6; i++) {
+      if (Date.now() >= deadline) break;
+      await delay(3000);
+      const u = page.url();
+      console.log([login-settle] Wait s: );
+      if (!/login|cas|auth/i.test(u)) break;
+    }
+  }
+  try {
+    await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+  } catch (_) {}
+  const finalUrl = page.url();
+  console.log([login-settle] Session settled at: );
+  if (/login|cas|auth/i.test(finalUrl)) {
+    console.error('[login-settle] Session did not settle ? still on auth page.');
+  }
 }
 
-// Set the category cascade via the AppGallery Connect API (works for new apps).
+// Set category via API (game: parentType= GAME, childType= CASUAL_GAME)
 async function setCategoryViaApi() {
-  const clientId = process.env.HUAWEI_AGC_CLIENT_ID;
-  const clientSecret = process.env.HUAWEI_AGC_CLIENT_SECRET;
-  if (!clientId || !clientSecret) {
-    console.log('No API credentials in env; skipping API category set');
+  const { HUAWEI_AGC_CLIENT_ID, HUAWEI_AGC_CLIENT_SECRET } = process.env;
+  if (!HUAWEI_AGC_CLIENT_ID || !HUAWEI_AGC_CLIENT_SECRET) {
+    console.warn('AGC credentials not set; skipping category API');
     return;
   }
-  const tr = await fetch(`${CONNECT_BASE}/oauth2/v1/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, grant_type: 'client_credentials' }),
+  const tr = await fetch('https://connect-api.cloud.huawei.com/api/oauth2/v1/token', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_id: HUAWEI_AGC_CLIENT_ID, client_secret: HUAWEI_AGC_CLIENT_SECRET, grant_type: 'client_credentials' }),
   });
-  const tok = (await tr.json()).access_token;
-  if (!tok) { console.log('API token fetch failed; skipping API category set'); return; }
-  const H = { Authorization: `Bearer ${tok}`, client_id: clientId, 'Content-Type': 'application/json' };
-  const put = await fetch(`${CONNECT_BASE}/publish/v2/app-info?appId=${APP_ID}&releaseType=1`, {
-    method: 'PUT',
-    headers: H,
+  const td = await tr.json();
+  const token = td.access_token;
+  if (!token) { console.warn('Could not get API token for category'); return; }
+
+  const CATEGORY = {
+    defaultLang: 'en-US',
+    parentType: 'GAME',
+    childType: 'CASUAL_GAME',
+    publishCountry: ['AB', 'AD', 'AE', 'AF', 'AG', 'AI', 'AL', 'AM', 'AO', 'AQ', 'AR', 'AS', 'AT', 'AU', 'AW', 'AX', 'AZ', 'BA', 'BB', 'BD', 'BE', 'BF', 'BG', 'BH', 'BI', 'BJ', 'BL', 'BM', 'BN', 'BO', 'BQ', 'BR', 'BS', 'BT', 'BV', 'BW', 'BY', 'BZ', 'CA', 'CC', 'CD', 'CF', 'CG', 'CH', 'CI', 'CK', 'CL', 'CM', 'CO', 'CR', 'CU', 'CV', 'CW', 'CX', 'CY', 'CZ', 'DE', 'DJ', 'DK', 'DM', 'DO', 'DZ', 'EC', 'EE', 'EG', 'EH', 'ER', 'ES', 'ET', 'FI', 'FJ', 'FK', 'FM', 'FO', 'FR', 'GA', 'GB', 'GD', 'GE', 'GF', 'GG', 'GH', 'GI', 'GL', 'GM', 'GN', 'GP', 'GQ', 'GR', 'GS', 'GT', 'GU', 'GW', 'GY', 'HK', 'HN', 'HR', 'HT', 'HU', 'ID', 'IE', 'IL', 'IM', 'IN', 'IO', 'IQ', 'IR', 'IS', 'IT', 'JE', 'JM', 'JO', 'JP', 'KE', 'KG', 'KH', 'KI', 'KM', 'KN', 'KP', 'KR', 'KW', 'KY', 'KZ', 'LA', 'LB', 'LC', 'LI', 'LK', 'LR', 'LS', 'LT', 'LU', 'LV', 'LY', 'MA', 'MC', 'MD', 'ME', 'MF', 'MG', 'MH', 'MK', 'ML', 'MM', 'MN', 'MO', 'MP', 'MQ', 'MR', 'MS', 'MT', 'MU', 'MV', 'MW', 'MX', 'MY', 'MZ', 'NA', 'NC', 'NE', 'NF', 'NG', 'NI', 'NL', 'NO', 'NP', 'NR', 'NU', 'NZ', 'OM', 'PA', 'PE', 'PF', 'PG', 'PH', 'PK', 'PL', 'PM', 'PN', 'PR', 'PS', 'PT', 'PW', 'PY', 'QA', 'RE', 'RO', 'RS', 'RU', 'RW', 'SA', 'SB', 'SC', 'SD', 'SE', 'SG', 'SH', 'SI', 'SJ', 'SK', 'SL', 'SM', 'SN', 'SO', 'SR', 'SS', 'ST', 'SV', 'SX', 'SY', 'SZ', 'TC', 'TD', 'TF', 'TG', 'TH', 'TJ', 'TK', 'TL', 'TM', 'TN', 'TO', 'TR', 'TT', 'TV', 'TW', 'TZ', 'UA', 'UG', 'UM', 'US', 'UY', 'UZ', 'VA', 'VC', 'VE', 'VG', 'VI', 'VN', 'VU', 'WF', 'WS', 'XK', 'YE', 'YT', 'ZA', 'ZM', 'ZW'],
+    privacyPolicy: 'https://example.com/privacy',
+    isFree: true,
+  };
+
+  const put = await fetch(https://connect-api.cloud.huawei.com/api/publish/v2/app-info?appId=, {
+    method: 'PUT', headers: { 'Authorization': Bearer , 'client_id': HUAWEI_AGC_CLIENT_ID, 'Content-Type': 'application/json' },
     body: JSON.stringify(CATEGORY),
   });
   const body = await put.json().catch(() => ({}));
-  console.log(`API category set: code=${body.ret?.code} msg=${body.ret?.msg}`);
+  console.log(API category set: code= msg=);
 }
+
 
 // Find the frame whose body contains a given text.
 async function findFrame(page, needle) {
@@ -105,16 +133,33 @@ async function findFrame(page, needle) {
   return null;
 }
 
+
 async function verFrame(page) {
+  const URL_HINT = /appVersion|app-version|distribute\/appVersion/i;
   let best = null, len = 0;
   for (const fr of page.frames()) {
-    if (!/appVersion/.test(fr.url())) continue;
+    if (!URL_HINT.test(fr.url())) continue;
     let t = 0;
     try { t = await fr.evaluate(() => (document.body ? document.body.innerText.length : 0)); } catch (_) {}
     if (t > len) { len = t; best = fr; }
   }
   return len > 500 ? best : null;
 }
+
+
+// Click the "Draft" version in the sidebar.
+const DRAFT_RE = /\b(?:Draft|??|New draft|???)\b/i;
+async function clickDraftSidebar(page) {
+  return await page.evaluate((rxSrc) => {
+    const rx = new RegExp(rxSrc);
+    const candidates = [...document.querySelectorAll('span.version-title, li.el-menu-item, li.base-menu-item__third')];
+    const pick = candidates.find((el) => rx.test((el.textContent || '').trim()));
+    if (!pick) return { ok: false, text: null };
+    pick.click();
+    return { ok: true, text: (pick.textContent || '').trim() };
+  }, DRAFT_RE.source);
+}
+
 
 async function clickOK(f) {
   try {
@@ -128,6 +173,7 @@ async function clickOK(f) {
   await delay(1200);
 }
 
+
 (async () => {
   const lockFd = acquireLock(LOCK_PATH);
   if (lockFd == null) {
@@ -137,22 +183,25 @@ async function clickOK(f) {
   console.log('[lock] acquired');
   let ownedPage = null;
   try {
-    console.log(`Connecting to Chrome CDP at ${CDP_URL}...`);
+    console.log(Connecting to Chrome CDP at ...);
     const browser = await chromium.connectOverCDP(CDP_URL);
     const context = browser.contexts()[0];
-    // Isolate: own a fresh page on the existing context so the keep-alive
-    // timer's page is independent. Do not close other pages.
     const page = await context.newPage();
     ownedPage = page;
     await ensureLoggedIn(page);
 
+    // FIX: Wait for login session to fully settle before navigating
+    await waitForSessionSettled(page);
+
   await setCategoryViaApi();
 
+
   // ---- App Information page: compatible devices + Casual game ----
-  const appInfoUrl = `https://developer.huawei.com/consumer/en/service/josp/agc/index.html#/myApp/${APP_ID}/97458334310914199`;
-  console.log(`Navigating to App Information: ${appInfoUrl}`);
-  await page.goto(appInfoUrl, { waitUntil: 'domcontentloaded', timeout: 40000 });
+  const appInfoUrl = https://developer.huawei.com/consumer/en/service/josp/agc/index.html#/myApp//97458334310914199;
+  console.log(Navigating to App Information: );
+  await page.goto(appInfoUrl, { waitUntil: 'networkidle', timeout: 60000 });
   await delay(6000);
+
 
   let infoFrame = null;
   for (let i = 0; i < 12; i++) {
@@ -161,7 +210,7 @@ async function clickOK(f) {
     await delay(3000);
   }
   if (!infoFrame) fail('App Information page did not load (Compatible devices section not found)');
-  console.log(`App Info frame: ${infoFrame.url()}`);
+  console.log(App Info frame: );
 
   // Dismiss guide overlays / popups.
   for (const f of [infoFrame, page.mainFrame()]) {
@@ -177,6 +226,7 @@ async function clickOK(f) {
   }
   await delay(1500);
 
+
   const devices = await infoFrame.evaluate(() => {
     const out = {};
     for (const name of ['Mobile phone', 'Tablet']) {
@@ -190,8 +240,9 @@ async function clickOK(f) {
     }
     return out;
   });
-  console.log(`Compatible devices: ${JSON.stringify(devices)}`);
+  console.log(Compatible devices: );
   await delay(1000);
+
 
   const casual = await infoFrame.evaluate(() => {
     const r = [...document.querySelectorAll('label.el-radio')].find(
@@ -202,8 +253,9 @@ async function clickOK(f) {
     if (!checked) r.click();
     return checked ? 'already' : 'clicked';
   });
-  console.log(`Casual game: ${casual}`);
+  console.log(Casual game: );
   await delay(1000);
+
 
   const saved = await infoFrame.evaluate(() => {
     const b = [...document.querySelectorAll('button')].find(
@@ -212,35 +264,33 @@ async function clickOK(f) {
     if (b) { b.click(); return true; }
     return false;
   });
-  console.log(`App Info Save clicked: ${saved}`);
+  console.log(App Info Save clicked: );
   await delay(3500);
   await clickOK(infoFrame);
   await delay(2000);
+
 
   const devVerify = await infoFrame.evaluate(() => {
     return [...document.querySelectorAll('label.el-checkbox')]
       .filter((l) => l.classList.contains('is-checked'))
       .map((l) => (l.querySelector('.el-checkbox__label')?.textContent || '').trim());
   });
-  console.log(`Devices checked after save: ${JSON.stringify(devVerify)}`);
+  console.log(Devices checked after save: );
   if (!devVerify.includes('Mobile phone') || !devVerify.includes('Tablet')) {
-    fail(`compatible devices not set (Mobile phone + Tablet). Got: ${JSON.stringify(devVerify)}`);
+    fail(compatible devices not set (Mobile phone + Tablet). Got: );
   }
+
 
   // ---- Version page: distribution countries (all except Chinese mainland) ----
   console.log('Opening Draft version page for countries...');
-  const clickedDraft = await page.evaluate(() => {
-    const cand = [...document.querySelectorAll('span.version-title, span.item-text, li.el-menu-item')].find(
-      (e) => (e.textContent || '').trim() === 'Draft',
-    );
-    if (cand) { cand.click(); return true; }
-    return false;
-  });
-  console.log(`Clicked Draft: ${clickedDraft}`);
+  const clickResult = await clickDraftSidebar(page);
+  console.log(Clicked Draft: ok= text="");
+
 
   let vf = null;
   for (let i = 0; i < 14; i++) { await delay(4000); vf = await verFrame(page); if (vf) break; }
   if (!vf) fail('appVersion iframe not found (version page did not load)');
+
 
   const radio = await vf.evaluate(() => {
     const r = [...document.querySelectorAll('label.el-radio')].find(
@@ -250,9 +300,10 @@ async function clickOK(f) {
     if (!r.classList.contains('is-checked')) r.click();
     return 'ok';
   });
-  console.log(`Selected countries/regions radio: ${radio}`);
+  console.log(Selected countries/regions radio: );
   if (radio === 'not-found') fail('country selection radio not found on version page');
   await delay(3500);
+
 
   const allBox = await vf.evaluate(() => {
     const all = [...document.querySelectorAll('label.el-checkbox')].find(
@@ -262,8 +313,9 @@ async function clickOK(f) {
     if (!all.classList.contains('is-checked')) all.click();
     return 'ok';
   });
-  console.log(`All countries checkbox: ${allBox}`);
+  console.log(All countries checkbox: );
   await delay(2500);
+
 
   const china = await vf.evaluate(() => {
     const cn = [...document.querySelectorAll('label.el-checkbox')].find(
@@ -274,8 +326,9 @@ async function clickOK(f) {
     if (was) cn.click();
     return was ? 'unchecked' : 'already-off';
   });
-  console.log(`Chinese mainland: ${china}`);
+  console.log(Chinese mainland: );
   await delay(2500);
+
 
   const countrySaved = await vf.evaluate(() => {
     const b = [...document.querySelectorAll('button')].find(
@@ -284,10 +337,11 @@ async function clickOK(f) {
     if (b) { b.click(); return true; }
     return false;
   });
-  console.log(`Countries Save clicked: ${countrySaved}`);
+  console.log(Countries Save clicked: );
   if (!countrySaved) fail('country Save button was disabled/not found (selection did not register)');
   await delay(4000);
   for (let i = 0; i < 4; i++) { await clickOK(vf); }
+
 
   const after = await vf.evaluate(() => {
     const b = [...document.querySelectorAll('button')].find((x) => (x.textContent || '').trim() === 'Save');
@@ -296,14 +350,15 @@ async function clickOK(f) {
     );
     return { saveDisabled: b ? b.disabled : null, chinaChecked: cn ? cn.classList.contains('is-checked') : null };
   });
-  console.log(`After save: ${JSON.stringify(after)}`);
+  console.log(After save: );
   if (after.chinaChecked === true) fail('Chinese mainland is still selected after save');
-  if (after.saveDisabled === false) fail('Save still enabled after save — country change did not persist');
+  if (after.saveDisabled === false) fail('Save still enabled after save ? country change did not persist');
+
 
   console.log('APP_INFO_SETUP_SUCCESS');
   await browser.close();
   } catch (err) {
-    console.error(`APP_INFO_SETUP_FAILED: ${err.message}`);
+    console.error(APP_INFO_SETUP_FAILED: );
     process.exit(1);
   } finally {
     if (ownedPage) { try { await ownedPage.close(); } catch (_) {} }
